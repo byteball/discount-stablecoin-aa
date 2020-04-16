@@ -1,0 +1,397 @@
+{
+	doc_url: "https://ostable.org/stablecoin.json",
+	init: `{
+		$decimals = params.decimals OTHERWISE 2;
+		// underlying is the target currency we want to track, e.g. USD
+		$max_loan_value_in_underlying = params.max_loan_value_in_underlying OTHERWISE 10000; // prevent large loans as it would be difficult to auction them off
+		$overcollateralization_ratio = params.overcollateralization_ratio OTHERWISE 1.5;
+		$liquidation_ratio = params.liquidation_ratio OTHERWISE 1.3;
+		$auction_period = params.auction_period OTHERWISE 3600;
+		$auction_min_increment = params.auction_min_increment OTHERWISE 1; // in %
+		$oracle = params.oracle OTHERWISE 'F4KHJUCLJKY4JV7M5F754LAJX4EB7M4N';
+		if (params.feed_name AND !params.ma_feed_name OR !params.feed_name AND !params.ma_feed_name)
+			bounce("both or none of feed names must be specified");
+		$feed_name = params.feed_name OTHERWISE 'GBYTE_USD';
+		$ma_feed_name = params.ma_feed_name OTHERWISE 'GBYTE_USD_MA'; // moving average
+		$max_volatility = params.max_volatility OTHERWISE 5; // in %
+		$expiry_ts = parse_date(params.expiry_date);
+		$asset = var['asset'];
+		$expiry_exchange_rate = var['expiry_exchange_rate'];
+		$expired = !!$expiry_exchange_rate;
+		if ($expired)
+			$insolvent = (balance[base]/1e9 * $expiry_exchange_rate < var['circulating_supply']/10^$decimals);
+	}`,
+	messages: {
+		cases: [
+			{ // define stablecoin asset
+				if: `{ trigger.data.define AND !$asset }`,
+				messages: [
+					{
+						app: 'asset',
+						payload: {
+							// without cap
+							is_private: false,
+							is_transferrable: true,
+							auto_destroy: false,
+							fixed_denominations: false,
+							issued_by_definer_only: true,
+							cosigned_by_definer: false,
+							spender_attested: false,
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['asset'] = response_unit;
+							response['asset'] = response_unit;
+						}`
+					}
+				]
+			},
+
+			{ // repayment of the loan. It works after expiry too, even if the AA is insolvent
+				if: `{trigger.data.repay AND trigger.data.id AND $asset AND trigger.output[[asset=$asset]] > 0}`,
+				init: `{
+					$id = trigger.data.id;
+					if (var[$id || '_owner'] != trigger.address)
+						bounce('you are not the owner');
+					if (var[$id || '_repaid'])
+						bounce('already repaid');
+					if (var[$id || '_winner'])
+						bounce("the loan is currently on auction");
+					$amount = var[$id || '_amount'];
+					if (trigger.output[[asset=$asset]] < $amount)
+						bounce('you sent less than the loan amount');
+					$change = trigger.output[[asset=$asset]] - $amount;
+					$exchange_rate = $expired ? $expiry_exchange_rate : data_feed[[oracles=$oracle, feed_name=$ma_feed_name]];
+					$collateral = var[$id || '_collateral'];
+					$due_in_bytes = $amount/10^$decimals / $exchange_rate * 1e9;
+					$min_collateral = ceil($due_in_bytes * $liquidation_ratio);
+					if ($collateral < $min_collateral)
+						bounce("the loan is not sufficiently collateralized");
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{trigger.address}", amount: "{ var[$id || '_collateral'] }"}
+							]
+						}
+					},
+					{
+						app: 'payment',
+						payload: {
+							asset: '{$asset}',
+							outputs: [
+								{address: "{trigger.address}", amount: "{ $change }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var[$id || '_repaid'] = 1;
+							var['circulating_supply'] -= trigger.output[[asset=$asset]];
+						}`
+					}
+				]
+			},
+
+			{ // add collateral to keep the loan sufficiently collateralized
+				if: `{trigger.data.add_collateral AND trigger.data.id AND $asset AND trigger.output[[asset=base]] >= 1e5}`,
+				init: `{
+					$id = trigger.data.id;
+					if (var[$id || '_owner'] != trigger.address) // to prevent funding somebody else's loan by mistake
+						bounce('you are not the owner');
+					if (var[$id || '_repaid'])
+						bounce('already repaid');
+				}`,
+				messages: [{
+					app: 'state',
+					state: `{
+						var[$id || '_collateral'] += trigger.output[[asset=base]];
+						response['collateral'] = var[$id || '_collateral'];
+					}`
+				}]
+			},
+
+			{ // try to seize a loan whose collateralization ratio is below the liquidation ratio
+				if: `{ trigger.data.seize AND trigger.data.id AND $asset }`,
+				init: `{
+					$id = trigger.data.id;
+					if (var[$id || '_repaid'])
+						bounce('already repaid');
+					$amount = var[$id || '_amount'];
+					if (!$amount)
+						bounce('no such loan');
+					$exchange_rate = $expired ? $expiry_exchange_rate : data_feed[[oracles=$oracle, feed_name=$ma_feed_name]];
+					$collateral = var[$id || '_collateral'];
+					$due_in_bytes = $amount/10^$decimals / $exchange_rate * 1e9;
+					$min_collateral = ceil($due_in_bytes * $liquidation_ratio);
+					$opening_collateral = ceil($due_in_bytes * $overcollateralization_ratio);
+					// the loan can return to above min collateral if the price corrects. In cuch case, the owner is allowed to win the auction
+					if ($collateral >= $min_collateral AND trigger.address != var[$id || '_owner'])
+						bounce("the loan is sufficiently collateralized, you can't seize it");
+					$missing_collateral = $opening_collateral - $collateral; // to bring it back to 1.5x
+					if (trigger.output[[asset=base]] < $missing_collateral)
+						bounce('you sent less than the missing collateral');
+					$auction_end_ts = var[$id || '_auction_end_ts'];
+					if ($auction_end_ts){
+						if (timestamp > $auction_end_ts)
+							bounce('auction already expired');
+						$current_winner_bid = var[$id || '_winner_bid'];
+						if (trigger.output[[asset=base]] <= $current_winner_bid)
+							bounce('your bid is less than the current winner');
+						if (trigger.output[[asset=base]] < (1+$auction_min_increment/100)*$current_winner_bid)
+							bounce('your bid must be at least '||$auction_min_increment||'% better than the current winner');
+						$current_winner = var[$id || '_winner'];
+						// will be refunded immediately if not AA, otherwise has to pull. Sending to AAs is dangerous as they can bounce.
+						$bRefundToCurrentWinner = !is_aa($current_winner);
+					}
+				}`,
+				messages: [
+					{
+						if: "{$bRefundToCurrentWinner}",
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{$current_winner}", amount: "{ $current_winner_bid - 1000 }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							if ($current_winner AND !$bRefundToCurrentWinner)
+								var['balance_' || $current_winner] += $current_winner_bid; // he can later withdraw from this balance
+							var[$id || '_auction_end_ts'] = timestamp + $auction_period; // waiting period is restarted after each better bid
+							var[$id || '_winner'] = trigger.address;
+							var[$id || '_winner_bid'] = trigger.output[[asset=base]];
+							response['new_bid'] = trigger.output[[asset=base]];
+						}`
+					}
+				]
+			},
+
+			{ // end auction and reassign the loan to a new owner.  Allowed even if expired as seizure could have begun before expiry
+				if: `{ trigger.data.end_auction AND trigger.data.id AND $asset }`,
+				init: `{
+					$id = trigger.data.id;
+					if (var[$id || '_repaid'])
+						bounce('already repaid');
+					$auction_end_ts = var[$id || '_auction_end_ts'];
+					if (!$auction_end_ts)
+						bounce('not on auction');
+					if (timestamp < $auction_end_ts)
+						bounce('auction still under way');
+					$winner_bid = var[$id || '_winner_bid'];
+					$winner = var[$id || '_winner'];
+					$owner = var[$id || '_owner'];
+					$collateral = var[$id || '_collateral'];
+					$amount = var[$id || '_amount'];
+					$exchange_rate = $expired ? $expiry_exchange_rate : data_feed[[oracles=$oracle, feed_name=$ma_feed_name]];
+					$due_in_bytes = $amount/10^$decimals / $exchange_rate * 1e9;
+					$min_collateral = ceil($due_in_bytes * $liquidation_ratio);
+					$bHealthy = ($collateral >= $min_collateral);
+					if ($bHealthy){ // the loan got back to fully collateralized state due to price correction or the owner refilling the callateral
+						$bRefundToWinner = !is_aa($winner);
+						return;
+					}
+
+					// if the winner is the past owner, all the bid money is just added to the collateral, otherwise the collateral is the usual 1.5x and the excess is the AA's profit
+					if ($winner == $owner)
+						$new_collateral = $collateral + $winner_bid;
+					else{
+						$opening_collateral = ceil($due_in_bytes * $overcollateralization_ratio);
+						$new_collateral = min($opening_collateral, $collateral + $winner_bid); // the rest is the AA's profit
+					}
+				}`,
+				messages: [
+					{
+						// refund the winner who tried to seize the loan (even if it was the current owner), nothing else changes
+						if: `{$bHealthy AND $bRefundToWinner}`, 
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{$winner}", amount: "{ $winner_bid - 1000 }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var[$id || '_auction_end_ts'] = false; // this ends the auction
+							var[$id || '_winner'] = false;
+							var[$id || '_winner_bid'] = false;
+							if (!$bHealthy) {
+								var[$id || '_owner'] = $winner;
+								var[$id || '_collateral'] = $new_collateral;
+								response['new_owner'] = $winner;
+								response['new_collateral'] = $new_collateral;
+							}
+							else {
+								if (!$bRefundToWinner)
+									var['balance_' || $winner] += $winner_bid;
+							}
+						}`
+					}
+				]
+			},
+
+			{ // withdraw funds remaining after losing an auction. Only AAs need this dendrite as regular users are immediately refunded once a higher bid is received
+				if: `{trigger.data.withdraw}`,
+				init: `{
+					$key = 'balance_' || trigger.address;
+					$balance = var[$key] + 0;
+					if ($balance <= 0)
+						bounce("you have no balance");
+					if (trigger.data.to){
+						if (!is_valid_address(trigger.data.to))
+							bounce("invalid withdrawal address: " || trigger.data.to);
+						$address = trigger.data.to;
+					}
+					else
+						$address = trigger.address;
+					$amount = trigger.data.amount OTHERWISE $balance;
+					if ($amount > $balance)
+						bounce("withdrawal amount too large, balance: " || $balance);
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: "base",
+							outputs: [
+								{address: "{$address}", amount: "{$amount}"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var[$key] -= $amount;
+							response[$address] = -$amount;
+						}`
+					}
+				]
+			},
+
+			{ // record the exchange rate on expiry date
+				if: `{ trigger.data.expire AND $asset AND !$expired AND timestamp > $expiry_ts }`,
+				messages: [{
+					app: 'state',
+					state: `{
+						$exchange_rate_last = data_feed[[oracles=$oracle, feed_name=$feed_name]];
+						$exchange_rate_ma = data_feed[[oracles=$oracle, feed_name=$ma_feed_name]];
+						if (abs($exchange_rate_last - $exchange_rate_ma) > $max_volatility/100 * $exchange_rate_ma)
+							bounce('recent price changes are too fast ' || $exchange_rate_last || ', MA ' || $exchange_rate_ma);
+						if (balance[base]/1e9 * min($exchange_rate_ma, $exchange_rate_last) < var['circulating_supply']/10^$decimals * $liquidation_ratio)
+							bounce("undercollateralized");
+						var['expiry_exchange_rate'] = $exchange_rate_last;
+						response['expiry_exchange_rate'] = $exchange_rate_last;
+					}`
+				}]
+			},
+
+			{ // sell bytes for stablecoin
+				if: `{ $asset AND trigger.output[[asset=$asset]] > 0 AND !$insolvent AND $expired }`,
+				init: `{
+					$asset_amount = trigger.output[[asset=$asset]];
+					$underlying_amount = $asset_amount / 10^$decimals;
+					$gb_amount = $underlying_amount / $expiry_exchange_rate;
+					$bytes_amount = floor($gb_amount * 1e9);
+					if ($bytes_amount == 0)
+						bounce("you would receive 0 bytes");
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: 'base',
+							outputs: [
+								{address: "{trigger.address}", amount: "{ $bytes_amount }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['circulating_supply'] -= $asset_amount;
+						}`
+					}
+				]
+			},
+			
+			{ // sell stablecoin for bytes, even if insolvent. If insolvent, the sale would inflate the supply of the stablecoin, lower its price, and make seizure of undercollateralized loans worthwhile
+				if: `{ $asset AND trigger.output[[asset=base]] >= 1e5 AND $expired }`,
+				init: `{
+					$bytes_amount = trigger.output[[asset=base]] - 1000; // subtract a fee to compensate for network fees
+					$gb_amount = $bytes_amount / 1e9;
+					$underlying_amount = $gb_amount * $expiry_exchange_rate;
+					$asset_amount = floor($underlying_amount * 10^$decimals);
+					if ($asset_amount == 0)
+						bounce("you would receive 0 stablecoins");
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: `{$asset}`,
+							outputs: [
+								{address: "{trigger.address}", amount: "{ $asset_amount }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var['circulating_supply'] += $asset_amount;
+						}`
+					}
+				]
+			},
+
+			{ // issue stablecoin for bytes collateral
+				if: "{ trigger.output[[asset=base]] >= 1e5 AND $asset AND !$expired }",
+				init: `{
+					$exchange_rate_last = data_feed[[oracles=$oracle, feed_name=$feed_name]];
+					$exchange_rate_ma = data_feed[[oracles=$oracle, feed_name=$ma_feed_name]];
+					$exchange_rate = min($exchange_rate_last, $exchange_rate_ma);
+					$underlying_value = trigger.output[[asset=base]] / 1e9 * $exchange_rate;
+					$loan_value = $underlying_value / $overcollateralization_ratio;
+					if ($loan_value > $max_loan_value_in_underlying)
+						bounce('loan would be too large, please split it');
+					$loan_value_in_asset = floor($loan_value * 10^$decimals);
+					if ($loan_value_in_asset == 0)
+						bounce("loan amount would be 0");
+				}`,
+				messages: [
+					{
+						app: 'payment',
+						payload: {
+							asset: "{$asset}",
+							outputs: [
+								{address: "{trigger.address}", amount: "{ $loan_value_in_asset }"}
+							]
+						}
+					},
+					{
+						app: 'state',
+						state: `{
+							var[response_unit || '_owner'] = trigger.address;
+							var[response_unit || '_collateral'] = trigger.output[[asset=base]];
+							var[response_unit || '_amount'] = $loan_value_in_asset;
+							var['circulating_supply'] += $loan_value_in_asset;
+							response['amount'] = $loan_value_in_asset;
+							response['id'] = response_unit;
+						}`
+					},
+				]
+			},
+		]
+	}
+}
