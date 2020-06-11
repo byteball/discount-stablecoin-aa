@@ -9,7 +9,7 @@ describe('Auction', function () {
 	this.timeout(120 * 1000)
 
 	before(async () => {
-		this.network = await Network.create()
+		this.network = await Network.create().run()
 	//	this.explorer = await this.network.newObyteExplorer().ready()
 		this.genesis = await this.network.getGenesisNode().ready();
 
