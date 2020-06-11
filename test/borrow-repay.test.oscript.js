@@ -183,10 +183,10 @@ describe('Check borrow repay', function () {
 		this.collateralAmount = amount
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal(expectedLoanAmount+'')
+		expect(vars['circulating_supply']).to.be.equal(expectedLoanAmount)
 		expect(vars[this.loanId + '_owner']).to.be.equal(this.aliceAddress)
-		expect(vars[this.loanId + '_collateral']).to.be.equal(amount+'')
-		expect(vars[this.loanId + '_amount']).to.be.equal(expectedLoanAmount+'')
+		expect(vars[this.loanId + '_collateral']).to.be.equal(amount)
+		expect(vars[this.loanId + '_amount']).to.be.equal(expectedLoanAmount)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment' && m.payload.asset === this.asset)
@@ -222,7 +222,7 @@ describe('Check borrow repay', function () {
 		expect(response.response.responseVars.collateral).to.be.equal(newCollateralAmount)
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars[this.loanId + '_collateral']).to.be.equal(newCollateralAmount+'')
+		expect(vars[this.loanId + '_collateral']).to.be.equal(newCollateralAmount)
 
 		this.collateralAmount = newCollateralAmount
 	})
@@ -252,8 +252,8 @@ describe('Check borrow repay', function () {
 	//	await this.network.witnessUntilStable(response.response_unit)
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal('0')
-		expect(vars[this.loanId + '_repaid']).to.be.equal('1')
+		expect(vars['circulating_supply']).to.be.equal(0)
+		expect(vars[this.loanId + '_repaid']).to.be.equal(1)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment')

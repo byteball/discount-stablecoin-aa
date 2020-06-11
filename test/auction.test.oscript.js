@@ -200,10 +200,10 @@ describe('Auction', function () {
 		this.collateralAmount = amount
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal(expectedLoanAmount+'')
+		expect(vars['circulating_supply']).to.be.equal(expectedLoanAmount)
 		expect(vars[this.loanId + '_owner']).to.be.equal(this.aliceAddress)
-		expect(vars[this.loanId + '_collateral']).to.be.equal(amount+'')
-		expect(vars[this.loanId + '_amount']).to.be.equal(expectedLoanAmount+'')
+		expect(vars[this.loanId + '_collateral']).to.be.equal(amount)
+		expect(vars[this.loanId + '_amount']).to.be.equal(expectedLoanAmount)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment' && m.payload.asset === this.asset)
@@ -322,7 +322,7 @@ describe('Auction', function () {
 
 		const { vars } = await this.bob.readAAStateVars(this.aaAddress)
 		expect(vars[this.loanId + '_winner']).to.be.equal(this.bobAddress)
-		expect(vars[this.loanId + '_winner_bid']).to.be.equal(requiredAmount + '')
+		expect(vars[this.loanId + '_winner_bid']).to.be.equal(requiredAmount)
 		
 		this.currentBid = requiredAmount
 	})
@@ -373,7 +373,7 @@ describe('Auction', function () {
 
 		const { vars } = await this.charlie.readAAStateVars(this.aaAddress)
 		expect(vars[this.loanId + '_winner']).to.be.equal(this.charlieAddress)
-		expect(vars[this.loanId + '_winner_bid']).to.be.equal(requiredAmount + '')
+		expect(vars[this.loanId + '_winner_bid']).to.be.equal(requiredAmount)
 		expect(vars['balance_' + this.bobAddress]).to.be.undefined
 
 		const { unitObj } = await this.charlie.getUnitInfo({ unit: response.response_unit })
@@ -455,7 +455,7 @@ describe('Auction', function () {
 
 		const { vars } = await this.bob.readAAStateVars(this.aaAddress)
 		expect(vars[this.loanId + '_owner']).to.be.equal(this.charlieAddress)
-		expect(vars[this.loanId + '_collateral']).to.be.equal(newCollateral + '')
+		expect(vars[this.loanId + '_collateral']).to.be.equal(newCollateral)
 		expect(vars[this.loanId + '_winner']).to.be.undefined
 		expect(vars[this.loanId + '_winner_bid']).to.be.undefined
 		expect(vars[this.loanId + '_auction_end_ts']).to.be.undefined
@@ -531,8 +531,8 @@ describe('Auction', function () {
 	//	await this.network.witnessUntilStable(response.response_unit)
 
 		const { vars } = await this.charlie.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal('0')
-		expect(vars[this.loanId + '_repaid']).to.be.equal('1')
+		expect(vars['circulating_supply']).to.be.equal(0)
+		expect(vars[this.loanId + '_repaid']).to.be.equal(1)
 
 		const { unitObj } = await this.charlie.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment')

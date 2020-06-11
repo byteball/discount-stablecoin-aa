@@ -168,10 +168,10 @@ describe('Afterlife', function () {
 		this.collateralAmount = amount
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal(expectedLoanAmount+'')
+		expect(vars['circulating_supply']).to.be.equal(expectedLoanAmount)
 		expect(vars[this.loanId + '_owner']).to.be.equal(this.aliceAddress)
-		expect(vars[this.loanId + '_collateral']).to.be.equal(amount+'')
-		expect(vars[this.loanId + '_amount']).to.be.equal(expectedLoanAmount+'')
+		expect(vars[this.loanId + '_collateral']).to.be.equal(amount)
+		expect(vars[this.loanId + '_amount']).to.be.equal(expectedLoanAmount)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment' && m.payload.asset === this.asset)
@@ -248,7 +248,7 @@ describe('Afterlife', function () {
 		expect(response.response.responseVars.expiry_exchange_rate).to.be.equal(this.finalExchangeRate)
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['expiry_exchange_rate']).to.be.equal(this.finalExchangeRate+'')
+		expect(vars['expiry_exchange_rate']).to.be.equal(this.finalExchangeRate)
 	})
 
 	it('Record the exchange rate again - should fail', async () => {
@@ -291,7 +291,7 @@ describe('Afterlife', function () {
 		this.circulatingSupply = this.loanAmount - amount
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal(this.circulatingSupply.toString())
+		expect(vars['circulating_supply']).to.be.equal(this.circulatingSupply)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment')
@@ -322,7 +322,7 @@ describe('Afterlife', function () {
 		this.circulatingSupply += outAmount
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal(this.circulatingSupply.toString())
+		expect(vars['circulating_supply']).to.be.equal(this.circulatingSupply)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment' && m.payload.asset === this.asset)
@@ -359,8 +359,8 @@ describe('Afterlife', function () {
 		this.circulatingSupply -= this.loanAmount
 
 		const { vars } = await this.alice.readAAStateVars(this.aaAddress)
-		expect(vars['circulating_supply']).to.be.equal(this.circulatingSupply.toString())
-		expect(vars[this.loanId + '_repaid']).to.be.equal('1')
+		expect(vars['circulating_supply']).to.be.equal(this.circulatingSupply)
+		expect(vars[this.loanId + '_repaid']).to.be.equal(1)
 
 		const { unitObj } = await this.alice.getUnitInfo({ unit: response.response_unit })
 		const paymentMessage = unitObj.messages.find(m => m.app === 'payment')
